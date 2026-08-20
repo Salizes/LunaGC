@@ -30,6 +30,12 @@ Contribute if you want/can...
 - Start the server and the game, make sure to also create an account in the LunaGC console!
 - Have fun (or don't)
 
+  7.0.0
+
+### Patching the game
+- Copy `patch/Astrolabe.dll` into the game folder at `GenshinImpact_Data/Plugins`. Back up the old `Astrolabe.dll` in the plugins folder first.
+- To build it yourself instead, clone [hk4e-patch-universal](https://github.com/kitkat033/hk4e-patch-universal), install [**Rust**](https://rust-lang.org/learn/get-started/) and **Cargo** (comes with rustup), run `cargo build --release`, and rename the DLL at `target/release` to `Astrolabe.dll`.
+ 7.0.0
 
 ### Getting started
 
@@ -83,4 +89,4 @@ Contribute if you want/can...
 
 proto Repository [hk4e-protos](https://gitlab.com/kitkat-multiverse/genshin-protocol)
 
-patch Repository [hk4e-patch-universal](https://github.com/kitkat033/hk4e-patch-universal)
+patch Repository [hk4e-patch-universal](https://github.com/kitkat033/hk4e-patch-universal) - `patch/Astrolabe.dll` is built from it

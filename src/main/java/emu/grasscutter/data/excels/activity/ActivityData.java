@@ -13,9 +13,11 @@ import lombok.experimental.FieldDefaults;
 public class ActivityData extends GameResource {
     int activityId;
     String activityType;
-    List<Integer> condGroupId;
-    List<Integer> watcherId;
-    List<ActivityWatcherData> watcherDataList;
+
+    // Инициализация списков по умолчанию
+    List<Integer> condGroupId = new ArrayList<>();
+    List<Integer> watcherId = new ArrayList<>();
+    List<ActivityWatcherData> watcherDataList = new ArrayList<>();
 
     @Override
     public int getId() {
@@ -24,10 +26,19 @@ public class ActivityData extends GameResource {
 
     @Override
     public void onLoad() {
-        this.watcherDataList =
-                watcherId.stream()
-                        .map(item -> GameData.getActivityWatcherDataMap().get(item.intValue()))
+        try {
+            if (watcherId != null && !watcherId.isEmpty()) {
+                this.watcherDataList = watcherId.stream()
+                        .map(item -> GameData.getActivityWatcherDataMap().get(item))
                         .filter(Objects::nonNull)
                         .toList();
+            } else {
+                this.watcherDataList = new ArrayList<>();
+            }
+        } catch (Exception e) {
+            emu.grasscutter.Grasscutter.getLogger()
+                    .error("Error processing ActivityData.onLoad", e);
+            this.watcherDataList = new ArrayList<>();
+        }
     }
 }

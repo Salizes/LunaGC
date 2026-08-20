@@ -13,6 +13,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
+// импортируем наши кастомные адаптеры
+import emu.grasscutter.utils.ModifierNameStepsAdapter;
+import emu.grasscutter.utils.FloatAdapter;
+
 public final class JsonUtils {
     static final Gson gson =
             new GsonBuilder()
@@ -24,22 +28,18 @@ public final class JsonUtils {
                     .registerTypeAdapter(byte[].class, new ByteArrayAdapter())
                     .registerTypeAdapter(JObject.class, new JObject.Adapter())
                     .registerTypeAdapterFactory(new EnumTypeAdapterFactory())
+                    // кастомный адаптер для списков строк
+                    .registerTypeAdapter(new TypeToken<List<String>>(){}.getType(), new ModifierNameStepsAdapter())
+                    // адаптер для float
+                    .registerTypeAdapter(Float.class, new FloatAdapter())
+                    .registerTypeAdapter(float.class, new FloatAdapter())
                     .disableHtmlEscaping()
                     .create();
 
-    /**
-     * Converts the given object to a JsonElement.
-     *
-     * @param object The object to convert.
-     * @return The JsonElement.
-     */
     public static JsonElement toJson(Object object) {
         return gson.toJsonTree(object);
     }
 
-    /*
-     * Encode an object to a JSON string
-     */
     public static String encode(Object object) {
         return gson.toJson(object);
     }
@@ -118,12 +118,6 @@ public final class JsonUtils {
         }
     }
 
-    /**
-     * Safely JSON decodes a given string.
-     *
-     * @param jsonData The JSON-encoded data.
-     * @return JSON decoded data, or null if an exception occurred.
-     */
     public static <T> T decode(String jsonData, Class<T> classType) {
         try {
             return gson.fromJson(jsonData, classType);

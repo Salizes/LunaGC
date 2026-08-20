@@ -2,6 +2,7 @@ package emu.grasscutter.data.excels;
 
 import emu.grasscutter.data.*;
 import emu.grasscutter.data.common.ItemParamData;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -16,8 +17,11 @@ public class CombineData extends GameResource {
     private int resultItemId;
     private int resultItemCount;
     private int scoinCost;
-    private List<ItemParamData> randomItems;
-    private List<ItemParamData> materialItems;
+
+    // Инициализация списков по умолчанию, чтобы они не были null
+    private List<ItemParamData> randomItems = new ArrayList<>();
+    private List<ItemParamData> materialItems = new ArrayList<>();
+
     private String recipeType;
 
     @Override
@@ -28,11 +32,23 @@ public class CombineData extends GameResource {
     @Override
     public void onLoad() {
         super.onLoad();
-        // clean data
-        randomItems =
-                randomItems.stream().filter(item -> item.getId() > 0).collect(Collectors.toList());
-        materialItems =
-                materialItems.stream().filter(item -> item.getId() > 0).collect(Collectors.toList());
+
+        try {
+            if (randomItems != null && !randomItems.isEmpty()) {
+                randomItems = randomItems.stream()
+                        .filter(item -> item != null && item.getId() > 0)
+                        .collect(Collectors.toList());
+            }
+
+            if (materialItems != null && !materialItems.isEmpty()) {
+                materialItems = materialItems.stream()
+                        .filter(item -> item != null && item.getId() > 0)
+                        .collect(Collectors.toList());
+            }
+        } catch (Exception e) {
+            emu.grasscutter.Grasscutter.getLogger()
+                    .error("Error cleaning CombineData items", e);
+        }
     }
 
     public int getCombineId() {

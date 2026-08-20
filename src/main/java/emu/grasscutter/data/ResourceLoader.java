@@ -172,7 +172,30 @@ public final class ResourceLoader {
         val simpleName = c.getSimpleName();
         if (doReload || !loadedResources.contains(simpleName)) {
             for (String name : type.name()) {
-                loadFromResource(c, FileUtils.getExcelPath(name), map);
+                // ИНТЕГРАЦИЯ ПАТЧА: Приоритет проверки .json перед старыми форматами
+                Path jsonPath = getResourcePath("ExcelBinOutput/" + name + ".json");
+                Path tsgPath = getResourcePath("ExcelBinOutput/" + name + ".tsg");
+                Path tsjPath = getResourcePath("ExcelBinOutput/" + name + ".tsj");
+                Path tsvPath = getResourcePath("ExcelBinOutput/" + name + ".tsv");
+
+                Path targetPath = null;
+                if (Files.exists(jsonPath)) {
+                    targetPath = jsonPath;
+                } else if (Files.exists(tsgPath)) {
+                    targetPath = tsgPath;
+                } else if (Files.exists(tsjPath)) {
+                    targetPath = tsjPath;
+                } else if (Files.exists(tsvPath)) {
+                    targetPath = tsvPath;
+                } else {
+                    targetPath = FileUtils.getExcelPath(name); // fallback на дефолт Grasscutter
+                }
+
+                if (targetPath != null && Files.exists(targetPath)) {
+                    loadFromResource(c, targetPath, map);
+                } else {
+                    Grasscutter.getLogger().error("Resource file not found: " + name);
+                }
             }
             loadedResources.add(simpleName);
         }
@@ -181,11 +204,13 @@ public final class ResourceLoader {
     @SuppressWarnings({"rawtypes", "unchecked"})
     protected static <T> void loadFromResource(Class<T> c, Path filename, Int2ObjectMap map)
             throws Exception {
+        // ИНТЕГРАЦИЯ ПАТЧА: Добавлена поддержка расширения "tsg"
+        val extension = FileUtils.getFileExtension(filename).toLowerCase();
         val results =
-                switch (FileUtils.getFileExtension(filename)) {
+                switch (extension) {
                     case "json" -> JsonUtils.loadToList(filename, c);
                     case "tsj" -> TsvUtils.loadTsjToListSetField(filename, c);
-                    case "tsv" -> TsvUtils.loadTsvToListSetField(filename, c);
+                    case "tsv", "tsg" -> TsvUtils.loadTsvToListSetField(filename, c); 
                     default -> null;
                 };
         if (results == null) return;
@@ -901,7 +926,7 @@ public final class ResourceLoader {
             try {
                 JsonUtils.loadToList(getResourcePath("Server/SubfieldMapping.json"), SubfieldMapping.class)
                         .forEach(entry -> subfieldMap.put(entry.getEntityId(), entry));
-                ;
+                
             } catch (IOException | NullPointerException ignored) {
             }
             Grasscutter.getLogger().debug("Loaded {} subfield mappings.", subfieldMap.size());
@@ -915,7 +940,7 @@ public final class ResourceLoader {
                 JsonUtils.loadToList(
                                 getResourcePath("Server/DropSubfieldMapping.json"), DropSubfieldMapping.class)
                         .forEach(entry -> dropSubfieldMap.put(entry.getDropId(), entry));
-                ;
+                
             } catch (IOException | NullPointerException ignored) {
             }
             Grasscutter.getLogger().debug("Loaded {} drop subfield mappings.", dropSubfieldMap.size());
@@ -930,7 +955,7 @@ public final class ResourceLoader {
                                 getResourcePath("Server/DropTableExcelConfigData.json"),
                                 DropTableExcelConfigData.class)
                         .forEach(entry -> dropTableExcelConfigDataMap.put(entry.getId(), entry));
-                ;
+                
             } catch (IOException | NullPointerException ignored) {
             }
             Grasscutter.getLogger()

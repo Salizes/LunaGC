@@ -78,6 +78,8 @@ public final class GameConstants {
       public static final String[] DEFAULT_TEAM_ABILITY_STRINGS = {
              "Ability_Avatar_Dive_Team",
              "TeamAbility_MoonPhase",
+             "TeamAbility_Reset_Crystal_Mark",
+             "TeamAbility_StarSuperconductor",
 
              "TeamAbility_Natsaurus_Transfer_Vehicle_Skill",
              "DynamicAbility_Phlogiston",

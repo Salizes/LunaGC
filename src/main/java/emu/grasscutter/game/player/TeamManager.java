@@ -15,10 +15,10 @@ import emu.grasscutter.game.world.*;
 import emu.grasscutter.net.packet.*;
 import emu.grasscutter.net.proto.*;
 import emu.grasscutter.net.proto.EnterTypeOuterClass.EnterType;
+import emu.grasscutter.net.proto.GrantReasonOuterClass.GrantReason;
 import emu.grasscutter.net.proto.MotionStateOuterClass.MotionState;
 import emu.grasscutter.net.proto.PlayerDieTypeOuterClass.PlayerDieType;
 import emu.grasscutter.net.proto.RetcodeOuterClass.Retcode;
-import emu.grasscutter.net.proto.GrantReasonOuterClass.GrantReason;
 import emu.grasscutter.server.event.entity.EntityCreationEvent;
 import emu.grasscutter.server.event.player.*;
 import emu.grasscutter.server.packet.send.*;
@@ -31,1069 +31,1095 @@ import lombok.*;
 
 @Entity
 public final class TeamManager extends BasePlayerDataManager {
-    @Transient private final List<EntityAvatar> avatars;
-    @Transient @Getter private final Set<EntityBaseGadget> gadgets;
-    @Transient @Getter private final IntSet teamResonances;
-    @Transient @Getter private final IntSet teamResonancesConfig;
-    @Transient @Getter @Setter private Set<String> teamAbilityEmbryos;
+  @Transient private final List<EntityAvatar> avatars;
+  @Transient @Getter private final Set<EntityBaseGadget> gadgets;
+  @Transient @Getter private final IntSet teamResonances;
+  @Transient @Getter private final IntSet teamResonancesConfig;
+  @Transient @Getter @Setter private Set<String> teamAbilityEmbryos;
 
-    @Getter private LinkedHashMap<Integer, TeamInfo> teams;
-    private int currentTeamIndex;
-    @Getter @Setter private int currentCharacterIndex;
-    @Transient @Getter @Setter private TeamInfo mpTeam;
-    @Transient @Getter @Setter private EntityTeam entity;
+  @Getter private LinkedHashMap<Integer, TeamInfo> teams;
+  private int currentTeamIndex;
+  @Getter @Setter private int currentCharacterIndex;
+  @Transient @Getter @Setter private TeamInfo mpTeam;
+  @Transient @Getter @Setter private EntityTeam entity;
 
-    @Transient private int useTemporarilyTeamIndex = -1;
-    @Transient private List<TeamInfo> temporaryTeam;
-    @Transient @Getter @Setter private boolean usingTrialTeam;
-    @Transient @Getter @Setter private TeamInfo trialAvatarTeam;
+  @Transient private int useTemporarilyTeamIndex = -1;
+  @Transient private List<TeamInfo> temporaryTeam;
+  @Transient @Getter @Setter private boolean usingTrialTeam;
+  @Transient @Getter @Setter private TeamInfo trialAvatarTeam;
 
-    @Transient @Getter @Setter private Map<Integer, Avatar> trialAvatars;
+  @Transient @Getter @Setter private Map<Integer, Avatar> trialAvatars;
 
-    @Transient @Getter @Setter
-    private int previousIndex = -1;
+  @Transient @Getter @Setter private int previousIndex = -1;
 
-    public TeamManager() {
-        this.mpTeam = new TeamInfo();
-        this.avatars = Collections.synchronizedList(new ArrayList<>());
-        this.gadgets = new HashSet<>();
-        this.teamResonances = new IntOpenHashSet();
-        this.teamResonancesConfig = new IntOpenHashSet();
-        this.teamAbilityEmbryos = new HashSet<>();
-        this.trialAvatars = new HashMap<>();
-        this.trialAvatarTeam = new TeamInfo();
+  public TeamManager() {
+    this.mpTeam = new TeamInfo();
+    this.avatars = Collections.synchronizedList(new ArrayList<>());
+    this.gadgets = new HashSet<>();
+    this.teamResonances = new IntOpenHashSet();
+    this.teamResonancesConfig = new IntOpenHashSet();
+    this.teamAbilityEmbryos = new HashSet<>();
+    this.trialAvatars = new HashMap<>();
+    this.trialAvatarTeam = new TeamInfo();
+  }
+
+  public TeamManager(Player player) {
+    this();
+    this.setPlayer(player);
+
+    this.teams = new LinkedHashMap<>();
+    this.currentTeamIndex = 1;
+    for (int i = 1; i <= GameConstants.DEFAULT_TEAMS; i++) {
+      this.teams.put(i, new TeamInfo());
+    }
+  }
+
+  public AbilityControlBlockOuterClass.AbilityControlBlock getAbilityControlBlock() {
+    AbilityControlBlockOuterClass.AbilityControlBlock.Builder abilityControlBlock =
+        AbilityControlBlockOuterClass.AbilityControlBlock.newBuilder();
+    int embryoId = 0;
+
+    var teamAbilities =
+        new LinkedHashSet<>(Arrays.asList(GameConstants.DEFAULT_TEAM_ABILITY_STRINGS));
+    var globalCombat = GameData.getConfigGlobalCombat();
+    if (globalCombat != null
+        && globalCombat.getDefaultAbilities() != null
+        && globalCombat.getDefaultAbilities().getDefaultTeamAbilities() != null) {
+      // The resource list is authoritative for the current client. In 7.0 this adds, among other
+      // things, TeamAbility_StarSuperconductor, which was absent from LunaGC's hard-coded list.
+      teamAbilities.addAll(globalCombat.getDefaultAbilities().getDefaultTeamAbilities());
     }
 
-    public TeamManager(Player player) {
-        this();
-        this.setPlayer(player);
-
-        this.teams = new LinkedHashMap<>();
-        this.currentTeamIndex = 1;
-        for (int i = 1; i <= GameConstants.DEFAULT_TEAMS; i++) {
-            this.teams.put(i, new TeamInfo());
-        }
+    boolean inNatlan = player.getScene() != null && player.getScene().getId() == 101;
+    for (String skill : teamAbilities) {
+      if (skill == null || skill.isBlank()) continue;
+      if ("DynamicAbility_Phlogiston".equals(skill) && !inNatlan) continue;
+      AbilityEmbryoOuterClass.AbilityEmbryo emb =
+          AbilityEmbryoOuterClass.AbilityEmbryo.newBuilder()
+              .setAbilityId(++embryoId)
+              .setAbilityNameHash(Utils.abilityHash(skill))
+              .setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
+              .build();
+      abilityControlBlock.addAbilityEmbryoList(emb);
     }
 
-    public AbilityControlBlockOuterClass.AbilityControlBlock getAbilityControlBlock() {
-        AbilityControlBlockOuterClass.AbilityControlBlock.Builder abilityControlBlock =
-            AbilityControlBlockOuterClass.AbilityControlBlock.newBuilder();
-        int embryoId = 0;
-
-        if (Arrays.stream(GameConstants.DEFAULT_TEAM_ABILITY_STRINGS).count() > 0) {
-            boolean inNatlan = player.getScene() != null && player.getScene().getId() == 101;
-            List<String> teamAbilties =
-                Arrays.stream(GameConstants.DEFAULT_TEAM_ABILITY_STRINGS).toList();
-            for (String skill : teamAbilties) {
-                if ("DynamicAbility_Phlogiston".equals(skill) && !inNatlan) continue;
-                AbilityEmbryoOuterClass.AbilityEmbryo emb =
-                    AbilityEmbryoOuterClass.AbilityEmbryo.newBuilder()
-                        .setAbilityId(++embryoId)
-                        .setAbilityNameHash(Utils.abilityHash(skill))
-                        .setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
-                        .build();
-                abilityControlBlock.addAbilityEmbryoList(emb);
+    var scene = player.getScene();
+    if (scene != null) {
+      String configName = scene.getSceneData().getLevelEntityConfig();
+      if (configName != null && !configName.isEmpty()) {
+        ConfigLevelEntity levelConfig = GameData.getConfigLevelEntityDataMap().get(configName);
+        if (levelConfig != null && levelConfig.getTeamAbilities() != null) {
+          for (ConfigAbilityData ability : levelConfig.getTeamAbilities()) {
+            String skill = ability.getAbilityName();
+            if (skill == null || skill.isEmpty()) {
+              Grasscutter.getLogger().warn("{} 中存在空能力名称", configName);
+              continue;
             }
+            AbilityEmbryoOuterClass.AbilityEmbryo emb =
+                AbilityEmbryoOuterClass.AbilityEmbryo.newBuilder()
+                    .setAbilityId(++embryoId)
+                    .setAbilityNameHash(Utils.abilityHash(skill))
+                    .setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
+                    .build();
+            abilityControlBlock.addAbilityEmbryoList(emb);
+          }
         }
-
-        var scene = player.getScene();
-        if (scene != null) {
-            String configName = scene.getSceneData().getLevelEntityConfig();
-            if (configName != null && !configName.isEmpty()) {
-                ConfigLevelEntity levelConfig = GameData.getConfigLevelEntityDataMap().get(configName);
-                if (levelConfig != null && levelConfig.getTeamAbilities() != null) {
-                    for (ConfigAbilityData ability : levelConfig.getTeamAbilities()) {
-                        String skill = ability.getAbilityName();
-                        if (skill == null || skill.isEmpty()) {
-                            Grasscutter.getLogger().warn("{} 中存在空能力名称", configName);
-                            continue;
-                        }
-                        AbilityEmbryoOuterClass.AbilityEmbryo emb =
-                            AbilityEmbryoOuterClass.AbilityEmbryo.newBuilder()
-                                .setAbilityId(++embryoId)
-                                .setAbilityNameHash(Utils.abilityHash(skill))
-                                .setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
-                                .build();
-                        abilityControlBlock.addAbilityEmbryoList(emb);
-                    }
-                }
-            }
-        }
-
-        return abilityControlBlock.build();
+      }
     }
 
-    public World getWorld() {
-        return this.getPlayer().getWorld();
+    return abilityControlBlock.build();
+  }
+
+  public World getWorld() {
+    return this.getPlayer().getWorld();
+  }
+
+  public int getTeamId(TeamInfo team) {
+    for (int i = 1; i <= this.teams.size(); i++) {
+      if (this.teams.get(i).equals(team)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  public int getCurrentTeamId() {
+
+    return currentTeamIndex;
+  }
+
+  private void setCurrentTeamId(int currentTeamIndex) {
+    this.currentTeamIndex = currentTeamIndex;
+  }
+
+  public long getCurrentCharacterGuid() {
+    var currentAvatarEntity = this.getCurrentAvatarEntity();
+    if (currentAvatarEntity == null) {
+
+      Avatar mainCharacter = new Avatar(this.getPlayer().getMainCharacterId());
+      return mainCharacter.getGuid();
     }
 
-    public int getTeamId(TeamInfo team) {
-        for (int i = 1; i <= this.teams.size(); i++) {
-            if (this.teams.get(i).equals(team)) {
-                return i;
-            }
-        }
-        return -1;
+    return currentAvatarEntity.getAvatar().getGuid();
+  }
+
+  public TeamInfo getCurrentTeamInfo() {
+    if (useTemporarilyTeamIndex >= 0 && useTemporarilyTeamIndex < temporaryTeam.size()) {
+      return temporaryTeam.get(useTemporarilyTeamIndex);
+    }
+    if (this.getPlayer().isInMultiplayer()) {
+      return this.getMpTeam();
+    }
+    return this.getTeams().get(this.currentTeamIndex);
+  }
+
+  public TeamInfo getCurrentSinglePlayerTeamInfo() {
+    return this.getTeams().get(this.currentTeamIndex);
+  }
+
+  public List<EntityAvatar> getActiveTeam() {
+    return avatars;
+  }
+
+  public List<EntityAvatar> getActiveTeam(boolean fix) {
+    if (!fix) return this.getActiveTeam();
+
+    var avatars = this.getActiveTeam();
+    var avatarIds = new HashSet<Long>();
+    for (var entityAvatar : new ArrayList<>(avatars)) {
+      if (avatarIds.contains(entityAvatar.getAvatar().getGuid())) {
+        avatars.remove(entityAvatar);
+      } else {
+        avatarIds.add(entityAvatar.getAvatar().getGuid());
+      }
     }
 
-    public int getCurrentTeamId() {
+    return avatars;
+  }
 
-        return currentTeamIndex;
+  public EntityAvatar getCurrentAvatarEntity() {
+
+    if (this.getActiveTeam().isEmpty()) {
+
+      this.currentCharacterIndex = 0;
+      Avatar mainCharacter = new Avatar(this.player.getMainCharacterId());
+      this.avatars.add(mainCharacter.getAsEntity());
+      return mainCharacter.getAsEntity();
     }
 
-    private void setCurrentTeamId(int currentTeamIndex) {
-        this.currentTeamIndex = currentTeamIndex;
+    if (this.currentCharacterIndex >= this.getActiveTeam().size()) {
+      this.currentCharacterIndex = 0;
     }
 
-    public long getCurrentCharacterGuid() {
-        var currentAvatarEntity = this.getCurrentAvatarEntity();
-        if (currentAvatarEntity == null){
+    EntityAvatar currentCharacter;
 
-            Avatar mainCharacter = new Avatar(this.getPlayer().getMainCharacterId());
-            return mainCharacter.getGuid();
-        }
-
-        return currentAvatarEntity.getAvatar().getGuid();
+    try {
+      currentCharacter = this.getActiveTeam().get(this.currentCharacterIndex);
+    } catch (Exception e) {
+      currentCharacter = this.getActiveTeam().get(0);
     }
 
-    public TeamInfo getCurrentTeamInfo() {
-        if (useTemporarilyTeamIndex >= 0 && useTemporarilyTeamIndex < temporaryTeam.size()) {
-            return temporaryTeam.get(useTemporarilyTeamIndex);
-        }
-        if (this.getPlayer().isInMultiplayer()) {
-            return this.getMpTeam();
-        }
-        return this.getTeams().get(this.currentTeamIndex);
-    }
+    return currentCharacter;
+  }
 
-    public TeamInfo getCurrentSinglePlayerTeamInfo() {
-        return this.getTeams().get(this.currentTeamIndex);
-    }
-
-    public List<EntityAvatar> getActiveTeam() {
-        return avatars;
-    }
-
-    public List<EntityAvatar> getActiveTeam(boolean fix) {
-        if (!fix) return this.getActiveTeam();
-
-        var avatars = this.getActiveTeam();
-        var avatarIds = new HashSet<Long>();
-        for (var entityAvatar : new ArrayList<>(avatars)) {
-            if (avatarIds.contains(entityAvatar.getAvatar().getGuid())) {
-                avatars.remove(entityAvatar);
-            } else {
-                avatarIds.add(entityAvatar.getAvatar().getGuid());
-            }
-        }
-
-        return avatars;
-    }
-
-    public EntityAvatar getCurrentAvatarEntity() {
-
-        if (this.getActiveTeam().isEmpty()) {
-
-            this.currentCharacterIndex = 0;
-            Avatar mainCharacter = new Avatar(this.player.getMainCharacterId());
-            this.avatars.add(mainCharacter.getAsEntity());
-            return mainCharacter.getAsEntity();
-        }
-
-        if (this.currentCharacterIndex >= this.getActiveTeam().size()) {
-            this.currentCharacterIndex = 0;
-        }
-
-        EntityAvatar currentCharacter;
-
-        try {
-            currentCharacter = this.getActiveTeam().get(this.currentCharacterIndex);
-        } catch (Exception e) {
-            currentCharacter = this.getActiveTeam().get(0);
-        }
-
-        return currentCharacter;
-    }
-
-    public boolean isSpawned() {
-        return this.getPlayer().getScene() != null
-            && this.getPlayer()
+  public boolean isSpawned() {
+    return this.getPlayer().getScene() != null
+        && this.getPlayer()
             .getScene()
             .getEntities()
             .containsKey(this.getCurrentAvatarEntity().getId());
+  }
+
+  public int getMaxTeamSize() {
+    if (this.getPlayer().isInMultiplayer()) {
+      int max = GAME_OPTIONS.avatarLimits.multiplayerTeam;
+      if (this.getPlayer().getWorld().getHost() == this.getPlayer()) {
+        return Math.max(1, (int) Math.ceil(max / (double) this.getWorld().getPlayerCount()));
+      }
+      return Math.max(1, (int) Math.floor(max / (double) this.getWorld().getPlayerCount()));
     }
 
-    public int getMaxTeamSize() {
-        if (this.getPlayer().isInMultiplayer()) {
-            int max = GAME_OPTIONS.avatarLimits.multiplayerTeam;
-            if (this.getPlayer().getWorld().getHost() == this.getPlayer()) {
-                return Math.max(1, (int) Math.ceil(max / (double) this.getWorld().getPlayerCount()));
-            }
-            return Math.max(1, (int) Math.floor(max / (double) this.getWorld().getPlayerCount()));
-        }
+    return GAME_OPTIONS.avatarLimits.singlePlayerTeam;
+  }
 
-        return GAME_OPTIONS.avatarLimits.singlePlayerTeam;
+  public boolean canAddAvatarsToTeam(TeamInfo team, int avatars) {
+    return team.size() + avatars <= this.getMaxTeamSize();
+  }
+
+  public boolean canAddAvatarToTeam(TeamInfo team) {
+    return this.canAddAvatarsToTeam(team, 1);
+  }
+
+  public boolean canAddAvatarsToCurrentTeam(int avatars) {
+    if (this.useTemporarilyTeamIndex != -1) {
+      return false;
+    }
+    return this.canAddAvatarsToTeam(this.getCurrentTeamInfo(), avatars);
+  }
+
+  public boolean canAddAvatarToCurrentTeam() {
+    return this.canAddAvatarsToCurrentTeam(1);
+  }
+
+  public boolean addAvatarsToTeam(TeamInfo team, Collection<Avatar> avatars) {
+    if (!this.canAddAvatarsToTeam(team, avatars.size())) {
+      return false;
     }
 
-    public boolean canAddAvatarsToTeam(TeamInfo team, int avatars) {
-        return team.size() + avatars <= this.getMaxTeamSize();
-    }
+    team.getAvatars().addAll(avatars.stream().map(a -> a.getAvatarId()).toList());
 
-    public boolean canAddAvatarToTeam(TeamInfo team) {
-        return this.canAddAvatarsToTeam(team, 1);
-    }
+    if (this.getPlayer().isInMultiplayer()) {
+      if (team.equals(this.getMpTeam())) {
 
-    public boolean canAddAvatarsToCurrentTeam(int avatars) {
-        if (this.useTemporarilyTeamIndex != -1) {
-            return false;
-        }
-        return this.canAddAvatarsToTeam(this.getCurrentTeamInfo(), avatars);
-    }
+        this.updateTeamEntities(new PacketChangeMpTeamAvatarRsp(this.getPlayer(), team));
+      }
+    } else {
 
-    public boolean canAddAvatarToCurrentTeam() {
-        return this.canAddAvatarsToCurrentTeam(1);
-    }
+      this.getPlayer().sendPacket(new PacketAvatarTeamUpdateNotify(this.getPlayer()));
 
-    public boolean addAvatarsToTeam(TeamInfo team, Collection<Avatar> avatars) {
-        if (!this.canAddAvatarsToTeam(team, avatars.size())) {
-            return false;
-        }
+      int teamId = this.getTeamId(team);
+      if (teamId != -1) {
 
-        team.getAvatars().addAll(avatars.stream().map(a -> a.getAvatarId()).toList());
-
-        if (this.getPlayer().isInMultiplayer()) {
-            if (team.equals(this.getMpTeam())) {
-
-                this.updateTeamEntities(new PacketChangeMpTeamAvatarRsp(this.getPlayer(), team));
-            }
+        if (teamId == this.getCurrentTeamId()) {
+          this.updateTeamEntities(new PacketSetUpAvatarTeamRsp(this.getPlayer(), teamId, team));
         } else {
-
-            this.getPlayer().sendPacket(new PacketAvatarTeamUpdateNotify(this.getPlayer()));
-
-            int teamId = this.getTeamId(team);
-            if (teamId != -1) {
-
-                if (teamId == this.getCurrentTeamId()) {
-                    this.updateTeamEntities(new PacketSetUpAvatarTeamRsp(this.getPlayer(), teamId, team));
-                } else {
-                    this.getPlayer().sendPacket(new PacketSetUpAvatarTeamRsp(this.getPlayer(), teamId, team));
-                }
-            }
+          this.getPlayer().sendPacket(new PacketSetUpAvatarTeamRsp(this.getPlayer(), teamId, team));
         }
-
-        return true;
+      }
     }
 
-    public boolean addAvatarToTeam(TeamInfo team, Avatar avatar) {
-        return this.addAvatarsToTeam(team, Collections.singleton(avatar));
+    return true;
+  }
+
+  public boolean addAvatarToTeam(TeamInfo team, Avatar avatar) {
+    return this.addAvatarsToTeam(team, Collections.singleton(avatar));
+  }
+
+  public boolean addAvatarsToCurrentTeam(Collection<Avatar> avatars) {
+    if (this.useTemporarilyTeamIndex != -1) {
+      return false;
+    }
+    return this.addAvatarsToTeam(this.getCurrentTeamInfo(), avatars);
+  }
+
+  public boolean addAvatarToCurrentTeam(Avatar avatar) {
+    return this.addAvatarsToCurrentTeam(Collections.singleton(avatar));
+  }
+
+  private void updateTeamResonances() {
+    this.getTeamResonances().clear();
+    this.getTeamResonancesConfig().clear();
+
+    if (this.avatars.size() < 4) return;
+
+    var elementCounts = new Object2IntOpenHashMap<ElementType>();
+    this.getActiveTeam().stream()
+        .map(EntityAvatar::getAvatar)
+        .filter(Objects::nonNull)
+        .map(Avatar::getSkillDepot)
+        .filter(Objects::nonNull)
+        .map(AvatarSkillDepotData::getElementType)
+        .filter(Objects::nonNull)
+        .forEach(elementType -> elementCounts.addTo(elementType, 1));
+
+    elementCounts.object2IntEntrySet().stream()
+        .filter(e -> e.getIntValue() >= 2)
+        .map(e -> e.getKey())
+        .filter(elementType -> elementType.getTeamResonanceId() != 0)
+        .forEach(
+            elementType -> {
+              this.teamResonances.add(elementType.getTeamResonanceId());
+              this.teamResonancesConfig.add(elementType.getConfigHash());
+            });
+
+    if (elementCounts.size() >= 4) {
+      this.teamResonances.add(ElementType.Default.getTeamResonanceId());
+      this.teamResonancesConfig.add(ElementType.Default.getConfigHash());
+    }
+  }
+
+  public void updateTeamProperties() {
+    this.updateTeamResonances();
+    this.getWorld().broadcastPacket(new PacketSceneTeamUpdateNotify(this.getPlayer()));
+
+    this.getActiveTeam().stream()
+        .filter(Objects::nonNull)
+        .map(EntityAvatar::getAvatar)
+        .filter(Objects::nonNull)
+        .forEach(Avatar::sendSkillExtraChargeMap);
+
+    int moonPhaseLevel = MoonPhaseSystem.getMoonPhaseLevel(this);
+    var teamEntity = this.getEntity();
+    if (teamEntity != null) {
+      float verdantDew = MoonPhaseSystem.synchronizeVerdantDew(teamEntity, moonPhaseLevel);
+      teamEntity
+          .getGlobalAbilityValues()
+          .put(MoonPhaseSystem.MOON_PHASE_LEVEL_KEY, (float) moonPhaseLevel);
+
+      this.getPlayer()
+          .sendPacket(
+              new PacketServerGlobalValueChangeNotify(
+                  teamEntity.getId(), MoonPhaseSystem.MOON_PHASE_LEVEL_KEY, moonPhaseLevel));
+      this.getPlayer()
+          .sendPacket(
+              new PacketServerGlobalValueChangeNotify(
+                  teamEntity.getId(), MoonPhaseSystem.VERDANT_DEW_KEY, verdantDew));
+
+      float stellarStacks =
+          StellarConductorSystem.setStacks(
+              teamEntity, StellarConductorSystem.getStacks(teamEntity));
+      for (String key : StellarConductorSystem.getStackKeys()) {
+        this.getPlayer()
+            .sendPacket(
+                new PacketServerGlobalValueChangeNotify(teamEntity.getId(), key, stellarStacks));
+      }
     }
 
-    public boolean addAvatarsToCurrentTeam(Collection<Avatar> avatars) {
-        if (this.useTemporarilyTeamIndex != -1) {
-            return false;
-        }
-        return this.addAvatarsToTeam(this.getCurrentTeamInfo(), avatars);
-    }
+    this.getPlayer().sendPacket(new PacketTeamMoonPhaseChangeNotify(moonPhaseLevel));
 
-    public boolean addAvatarToCurrentTeam(Avatar avatar) {
-        return this.addAvatarsToCurrentTeam(Collections.singleton(avatar));
-    }
-
-    private void updateTeamResonances() {
-        this.getTeamResonances().clear();
-        this.getTeamResonancesConfig().clear();
-
-        if (this.avatars.size() < 4) return;
-
-        var elementCounts = new Object2IntOpenHashMap<ElementType>();
+    long hexenzirkelCount =
         this.getActiveTeam().stream()
+            .filter(Objects::nonNull)
             .map(EntityAvatar::getAvatar)
             .filter(Objects::nonNull)
-            .map(Avatar::getSkillDepot)
-            .filter(Objects::nonNull)
-            .map(AvatarSkillDepotData::getElementType)
-            .filter(Objects::nonNull)
-            .forEach(elementType -> elementCounts.addTo(elementType, 1));
-
-        elementCounts.object2IntEntrySet().stream()
-            .filter(e -> e.getIntValue() >= 2)
-            .map(e -> e.getKey())
-            .filter(elementType -> elementType.getTeamResonanceId() != 0)
-            .forEach(
-                elementType -> {
-                    this.teamResonances.add(elementType.getTeamResonanceId());
-                    this.teamResonancesConfig.add(elementType.getConfigHash());
-                });
-
-        if (elementCounts.size() >= 4) {
-            this.teamResonances.add(ElementType.Default.getTeamResonanceId());
-            this.teamResonancesConfig.add(ElementType.Default.getConfigHash());
-        }
-    }
-
-    public void updateTeamProperties() {
-        this.updateTeamResonances();
-        this.getWorld()
-            .broadcastPacket(
-                new PacketSceneTeamUpdateNotify(
-                    this.getPlayer()));
-
-        this.getActiveTeam().stream()
-            .map(EntityAvatar::getAvatar)
-            .forEach(Avatar::sendSkillExtraChargeMap);
-
-        long moonPhaseCount = this.getActiveTeam().stream()
-            .filter(e -> PacketPlayerEnterSceneInfoNotify.getMoonphaseIds().contains(e.getAvatar().getAvatarId()))
+            .filter(
+                avatar ->
+                    PacketPlayerEnterSceneInfoNotify.getHexenzirkelIds()
+                        .contains(avatar.getAvatarId()))
             .count();
-        this.getPlayer().sendPacket(new PacketServerGlobalValueChangeNotify(
-            this.getEntity().getId(), "SGV_MoonPhaseLevel", (float) moonPhaseCount));
+    if (teamEntity != null) {
+      this.getPlayer()
+          .sendPacket(
+              new PacketServerGlobalValueChangeNotify(
+                  teamEntity.getId(), "SGV_HexenzirkelLevel", (float) hexenzirkelCount));
+    }
+    this.getPlayer().sendPacket(new PacketTeamHexenzirkelChangeNotify((int) hexenzirkelCount));
+  }
 
-        if (moonPhaseCount > 0) {
-            this.getPlayer().sendPacket(new PacketServerGlobalValueChangeNotify(
-                this.getEntity().getId(), "MoonOvergrowPoint_All", 100f));
-        }
+  public void updateTeamEntities(BasePacket responsePacket) {
 
-        this.getPlayer().sendPacket(new PacketTeamMoonPhaseChangeNotify((int) moonPhaseCount));
-
-        long hexenzirkelCount = this.getActiveTeam().stream()
-            .filter(e -> PacketPlayerEnterSceneInfoNotify.getHexenzirkelIds().contains(e.getAvatar().getAvatarId()))
-            .count();
-        this.getPlayer().sendPacket(new PacketServerGlobalValueChangeNotify(
-            this.getEntity().getId(), "SGV_HexenzirkelLevel", (float) hexenzirkelCount));
-        this.getPlayer().sendPacket(new PacketTeamHexenzirkelChangeNotify((int) hexenzirkelCount));
+    if (this.getCurrentTeamInfo().getAvatars().size() <= 0) {
+      return;
     }
 
-    public void updateTeamEntities(BasePacket responsePacket) {
+    var currentEntity = this.getCurrentAvatarEntity();
+    var existingAvatars = new Int2ObjectOpenHashMap<EntityAvatar>();
+    var prevSelectedAvatarIndex = -1;
 
-        if (this.getCurrentTeamInfo().getAvatars().size() <= 0) {
-            return;
-        }
-
-        var currentEntity = this.getCurrentAvatarEntity();
-        var existingAvatars = new Int2ObjectOpenHashMap<EntityAvatar>();
-        var prevSelectedAvatarIndex = -1;
-
-        for (EntityAvatar entity : this.getActiveTeam()) {
-            existingAvatars.put(entity.getAvatar().getAvatarId(), entity);
-        }
-
-        this.getActiveTeam().clear();
-
-        for (int i = 0; i < this.getCurrentTeamInfo().getAvatars().size(); i++) {
-            var avatarId = (int) this.getCurrentTeamInfo().getAvatars().get(i);
-            EntityAvatar entity;
-            if (existingAvatars.containsKey(avatarId)) {
-                entity = existingAvatars.get(avatarId);
-                existingAvatars.remove(avatarId);
-                if (entity == currentEntity) {
-                    prevSelectedAvatarIndex = i;
-                }
-            } else {
-                var player = this.getPlayer();
-                entity =
-                    EntityCreationEvent.call(
-                        EntityAvatar.class,
-                        new Class<?>[] {Scene.class, Avatar.class},
-                        new Object[] {player.getScene(), player.getAvatars().getAvatarById(avatarId)});
-            }
-
-            this.getActiveTeam().add(entity);
-        }
-
-        for (var entity : existingAvatars.values()) {
-            if (entity == currentEntity) {
-                entity.getAvatar().save();
-                continue;
-            }
-            this.getPlayer().getScene().removeEntity(entity);
-            entity.getAvatar().save();
-        }
-
-        if (prevSelectedAvatarIndex == -1) {
-
-            prevSelectedAvatarIndex =
-                Math.min(this.currentCharacterIndex, this.getActiveTeam().size() - 1);
-        }
-        this.currentCharacterIndex = prevSelectedAvatarIndex;
-
-        this.updateTeamProperties();
-
-        if (responsePacket != null) {
-            this.getPlayer().sendPacket(responsePacket);
-        }
-
-        checkCurrentAvatarIsAlive(currentEntity);
+    for (EntityAvatar entity : this.getActiveTeam()) {
+      existingAvatars.put(entity.getAvatar().getAvatarId(), entity);
     }
 
-    public void checkCurrentAvatarIsAlive(EntityAvatar currentEntity) {
-        if (currentEntity == null) {
-            currentEntity = this.getCurrentAvatarEntity();
+    this.getActiveTeam().clear();
+
+    for (int i = 0; i < this.getCurrentTeamInfo().getAvatars().size(); i++) {
+      var avatarId = (int) this.getCurrentTeamInfo().getAvatars().get(i);
+      EntityAvatar entity;
+      if (existingAvatars.containsKey(avatarId)) {
+        entity = existingAvatars.get(avatarId);
+        existingAvatars.remove(avatarId);
+        if (entity == currentEntity) {
+          prevSelectedAvatarIndex = i;
         }
+      } else {
+        var player = this.getPlayer();
+        entity =
+            EntityCreationEvent.call(
+                EntityAvatar.class,
+                new Class<?>[] {Scene.class, Avatar.class},
+                new Object[] {player.getScene(), player.getAvatars().getAvatarById(avatarId)});
+      }
 
-        if (!this.getActiveTeam().get(this.currentCharacterIndex).isAlive()) {
-
-            int replaceIndex = getDeadAvatarReplacement();
-            if (0 <= replaceIndex && replaceIndex < this.getActiveTeam().size()) {
-                this.currentCharacterIndex = replaceIndex;
-            } else {
-
-                this.currentCharacterIndex = 0;
-                this.reviveAvatar(this.getCurrentAvatarEntity().getAvatar());
-            }
-        }
-
-        var newAvatarEntity = this.getCurrentAvatarEntity();
-        if (currentEntity != null && newAvatarEntity != null && currentEntity != newAvatarEntity) {
-
-            var event =
-                new PlayerSwitchAvatarEvent(
-                    this.getPlayer(), currentEntity.getAvatar(), newAvatarEntity.getAvatar());
-            if (!event.call()) return;
-
-            this.getPlayer().getScene().replaceEntity(currentEntity, newAvatarEntity);
-        }
+      this.getActiveTeam().add(entity);
     }
 
-    public synchronized void setupAvatarTeam(int teamId, List<Long> list) {
-
-        if (list.isEmpty()
-            || list.size() > this.getMaxTeamSize()
-            || this.getPlayer().isInMultiplayer()) {
-            return;
-        }
-
-        List<Integer> team = new ArrayList<>();
-        team.add(teamId);
-
-        TeamInfo teamInfo = this.getTeams().get(team.size());
-        if (teamInfo == null) {
-            return;
-        }
-
-        LinkedHashSet<Avatar> newTeam = new LinkedHashSet<>();
-        for (Long aLong : list) {
-            Avatar avatar = this.getPlayer().getAvatars().getAvatarByGuid(aLong);
-            if (avatar == null || newTeam.contains(avatar)) {
-
-                return;
-            }
-            newTeam.add(avatar);
-        }
-
-        teamInfo.getAvatars().clear();
-        this.addAvatarsToTeam(teamInfo, newTeam);
+    for (var entity : existingAvatars.values()) {
+      if (entity == currentEntity) {
+        entity.getAvatar().save();
+        continue;
+      }
+      this.getPlayer().getScene().removeEntity(entity);
+      entity.getAvatar().save();
     }
 
-    public void setupMpTeam(List<Long> list) {
+    if (prevSelectedAvatarIndex == -1) {
 
-        if (list.size() == 0
-            || list.size() > this.getMaxTeamSize()
-            || !this.getPlayer().isInMultiplayer()) {
-            return;
-        }
+      prevSelectedAvatarIndex =
+          Math.min(this.currentCharacterIndex, this.getActiveTeam().size() - 1);
+    }
+    this.currentCharacterIndex = prevSelectedAvatarIndex;
 
-        TeamInfo teamInfo = this.getMpTeam();
+    this.updateTeamProperties();
 
-        LinkedHashSet<Avatar> newTeam = new LinkedHashSet<>();
-        for (Long aLong : list) {
-            Avatar avatar = this.getPlayer().getAvatars().getAvatarByGuid(aLong);
-            if (avatar == null || newTeam.contains(avatar)) {
-
-                return;
-            }
-            newTeam.add(avatar);
-        }
-
-        teamInfo.getAvatars().clear();
-        this.addAvatarsToTeam(teamInfo, newTeam);
+    if (responsePacket != null) {
+      this.getPlayer().sendPacket(responsePacket);
     }
 
-    public void setupTrialAvatars(boolean save) {
-        this.setPreviousIndex(this.getCurrentCharacterIndex());
+    checkCurrentAvatarIsAlive(currentEntity);
+  }
 
-        if (save) {
-            var originalTeam = this.getCurrentTeamInfo();
-            this.getTrialAvatarTeam().copyFrom(originalTeam);
-        } else this.getActiveTeam().clear();
-
-        this.usingTrialTeam = true;
+  public void checkCurrentAvatarIsAlive(EntityAvatar currentEntity) {
+    if (currentEntity == null) {
+      currentEntity = this.getCurrentAvatarEntity();
     }
 
-    public void trialAvatarTeamPostUpdate(int newCharacterIndex) {
-        this.setCurrentCharacterIndex(Math.min(newCharacterIndex, this.getActiveTeam().size() - 1));
+    if (!this.getActiveTeam().get(this.currentCharacterIndex).isAlive()) {
 
-        this.updateTeamProperties();
-        if (this.getPlayer().getScene() != null)
-            this.getPlayer().getScene().addEntity(this.getCurrentAvatarEntity());
+      int replaceIndex = getDeadAvatarReplacement();
+      if (0 <= replaceIndex && replaceIndex < this.getActiveTeam().size()) {
+        this.currentCharacterIndex = replaceIndex;
+      } else {
+
+        this.currentCharacterIndex = 0;
+        this.reviveAvatar(this.getCurrentAvatarEntity().getAvatar());
+      }
     }
 
-    public void addAvatarToTrialTeam(Avatar trialAvatar) {
+    var newAvatarEntity = this.getCurrentAvatarEntity();
+    if (currentEntity != null && newAvatarEntity != null && currentEntity != newAvatarEntity) {
 
-        this.getActiveTeam()
-            .forEach(
-                x ->
-                    this.getPlayer()
-                        .getScene()
-                        .removeEntity(x, VisionTypeOuterClass.VisionType.VisionType_VISION_REMOVE));
+      var event =
+          new PlayerSwitchAvatarEvent(
+              this.getPlayer(), currentEntity.getAvatar(), newAvatarEntity.getAvatar());
+      if (!event.call()) return;
 
-        this.getActiveTeam().removeIf(x -> x.getAvatar().getAvatarId() == trialAvatar.getAvatarId());
-        this.getCurrentTeamInfo().getAvatars().removeIf(x -> x == trialAvatar.getAvatarId());
+      this.getPlayer().getScene().replaceEntity(currentEntity, newAvatarEntity);
+    }
+  }
+
+  public synchronized void setupAvatarTeam(int teamId, List<Long> list) {
+
+    if (list.isEmpty()
+        || list.size() > this.getMaxTeamSize()
+        || this.getPlayer().isInMultiplayer()) {
+      return;
+    }
+
+    List<Integer> team = new ArrayList<>();
+    team.add(teamId);
+
+    TeamInfo teamInfo = this.getTeams().get(team.size());
+    if (teamInfo == null) {
+      return;
+    }
+
+    LinkedHashSet<Avatar> newTeam = new LinkedHashSet<>();
+    for (Long aLong : list) {
+      Avatar avatar = this.getPlayer().getAvatars().getAvatarByGuid(aLong);
+      if (avatar == null || newTeam.contains(avatar)) {
+
+        return;
+      }
+      newTeam.add(avatar);
+    }
+
+    teamInfo.getAvatars().clear();
+    this.addAvatarsToTeam(teamInfo, newTeam);
+  }
+
+  public void setupMpTeam(List<Long> list) {
+
+    if (list.size() == 0
+        || list.size() > this.getMaxTeamSize()
+        || !this.getPlayer().isInMultiplayer()) {
+      return;
+    }
+
+    TeamInfo teamInfo = this.getMpTeam();
+
+    LinkedHashSet<Avatar> newTeam = new LinkedHashSet<>();
+    for (Long aLong : list) {
+      Avatar avatar = this.getPlayer().getAvatars().getAvatarByGuid(aLong);
+      if (avatar == null || newTeam.contains(avatar)) {
+
+        return;
+      }
+      newTeam.add(avatar);
+    }
+
+    teamInfo.getAvatars().clear();
+    this.addAvatarsToTeam(teamInfo, newTeam);
+  }
+
+  public void setupTrialAvatars(boolean save) {
+    this.setPreviousIndex(this.getCurrentCharacterIndex());
+
+    if (save) {
+      var originalTeam = this.getCurrentTeamInfo();
+      this.getTrialAvatarTeam().copyFrom(originalTeam);
+    } else this.getActiveTeam().clear();
+
+    this.usingTrialTeam = true;
+  }
+
+  public void trialAvatarTeamPostUpdate(int newCharacterIndex) {
+    this.setCurrentCharacterIndex(Math.min(newCharacterIndex, this.getActiveTeam().size() - 1));
+
+    this.updateTeamProperties();
+    if (this.getPlayer().getScene() != null)
+      this.getPlayer().getScene().addEntity(this.getCurrentAvatarEntity());
+  }
+
+  public void addAvatarToTrialTeam(Avatar trialAvatar) {
+
+    this.getActiveTeam()
+        .forEach(
+            x ->
+                this.getPlayer()
+                    .getScene()
+                    .removeEntity(x, VisionTypeOuterClass.VisionType.VisionType_VISION_REMOVE));
+
+    this.getActiveTeam().removeIf(x -> x.getAvatar().getAvatarId() == trialAvatar.getAvatarId());
+    this.getCurrentTeamInfo().getAvatars().removeIf(x -> x == trialAvatar.getAvatarId());
+
+    this.getActiveTeam()
+        .add(
+            EntityCreationEvent.call(
+                EntityAvatar.class,
+                new Class<?>[] {Scene.class, Avatar.class},
+                new Object[] {player.getScene(), trialAvatar}));
+    this.getCurrentTeamInfo().addAvatar(trialAvatar);
+    this.getTrialAvatars().put(trialAvatar.getAvatarId(), trialAvatar);
+  }
+
+  public long getTrialAvatarGuid(int trialAvatarId) {
+    return this.getTrialAvatars().values().stream()
+        .filter(avatar -> avatar.getTrialAvatarId() == trialAvatarId)
+        .map(Avatar::getGuid)
+        .findFirst()
+        .orElse(0L);
+  }
+
+  public void unsetTrialAvatarTeam() {
+
+    var index = this.getPreviousIndex();
+    if (index < 0) index = 0;
+
+    this.trialAvatarTeamPostUpdate(index);
+
+    this.setPreviousIndex(-1);
+  }
+
+  public void removeTrialAvatarTeam() {
+    this.removeTrialAvatarTeam(
+        this.getActiveTeam().stream().map(avatar -> avatar.getAvatar().getAvatarId()).toList());
+  }
+
+  public void removeTrialAvatarTeam(int avatarId) {
+    this.removeTrialAvatarTeam(List.of(avatarId));
+  }
+
+  public void removeTrialAvatarTeam(List<Integer> trialAvatarIds) {
+    var isTeam = trialAvatarIds.size() == this.getActiveTeam().size();
+
+    var player = this.getPlayer();
+    var scene = player.getScene();
+
+    this.usingTrialTeam = false;
+    this.trialAvatarTeam = new TeamInfo();
+
+    this.getActiveTeam()
+        .forEach(
+            avatarEntity ->
+                scene.removeEntity(
+                    avatarEntity, VisionTypeOuterClass.VisionType.VisionType_VISION_REMOVE));
+
+    if (isTeam) {
+      this.getActiveTeam().clear();
+      this.getTrialAvatars().clear();
+    } else {
+      trialAvatarIds.forEach(
+          trialAvatarId -> {
+            this.getActiveTeam().removeIf(x -> x.getAvatar().getTrialAvatarId() == trialAvatarId);
+            this.getTrialAvatars().values().removeIf(x -> x.getTrialAvatarId() == trialAvatarId);
+          });
+    }
+
+    if (isTeam) {
+
+      this.getCurrentTeamInfo()
+          .getAvatars()
+          .forEach(
+              avatarId ->
+                  this.getActiveTeam()
+                      .add(
+                          EntityCreationEvent.call(
+                              EntityAvatar.class,
+                              new Class<?>[] {Scene.class, Avatar.class},
+                              new Object[] {scene, player.getAvatars().getAvatarById(avatarId)})));
+    } else {
+
+      var avatars = this.getCurrentTeamInfo().getAvatars();
+      for (var index = 0; index < avatars.size() - 1; index++) {
+        var avatar = avatars.get(index);
+        if (this.getActiveTeam().stream()
+            .map(entity -> entity.getAvatar().getAvatarId())
+            .toList()
+            .contains(avatar)) continue;
+
+        var avatarData = player.getAvatars().getAvatarById(avatar);
+        if (avatarData == null) continue;
 
         this.getActiveTeam()
             .add(
+                index,
                 EntityCreationEvent.call(
                     EntityAvatar.class,
                     new Class<?>[] {Scene.class, Avatar.class},
-                    new Object[] {player.getScene(), trialAvatar}));
-        this.getCurrentTeamInfo().addAvatar(trialAvatar);
-        this.getTrialAvatars().put(trialAvatar.getAvatarId(), trialAvatar);
+                    new Object[] {scene, avatarData}));
+      }
     }
 
-    public long getTrialAvatarGuid(int trialAvatarId) {
-        return this.getTrialAvatars().values().stream()
-            .filter(avatar -> avatar.getTrialAvatarId() == trialAvatarId)
-            .map(Avatar::getGuid)
-            .findFirst()
-            .orElse(0L);
+    this.unsetTrialAvatarTeam();
+  }
+
+  public void setupTemporaryTeam(List<List<Long>> guidList) {
+    this.temporaryTeam =
+        guidList.stream()
+            .map(
+                list -> {
+                  if (list.size() == 0 || list.size() > this.getMaxTeamSize()) {
+                    return null;
+                  }
+
+                  LinkedHashSet<Avatar> newTeam = new LinkedHashSet<>();
+                  for (Long aLong : list) {
+                    Avatar avatar = this.getPlayer().getAvatars().getAvatarByGuid(aLong);
+                    if (avatar == null || newTeam.contains(avatar)) {
+
+                      return null;
+                    }
+                    newTeam.add(avatar);
+                  }
+
+                  return newTeam.stream().map(Avatar::getAvatarId).toList();
+                })
+            .filter(Objects::nonNull)
+            .map(TeamInfo::new)
+            .toList();
+  }
+
+  public void useTemporaryTeam(int index) {
+    this.useTemporarilyTeamIndex = index;
+    this.updateTeamEntities(null);
+  }
+
+  public boolean cleanTemporaryTeam() {
+
+    if (useTemporarilyTeamIndex < 0) {
+      return false;
     }
 
-    public void unsetTrialAvatarTeam() {
+    this.useTemporarilyTeamIndex = -1;
+    this.temporaryTeam = null;
+    this.updateTeamEntities(null);
+    return true;
+  }
 
-        var index = this.getPreviousIndex();
-        if (index < 0) index = 0;
+  public synchronized void setCurrentTeam(int teamId) {
 
-        this.trialAvatarTeamPostUpdate(index);
-
-        this.setPreviousIndex(-1);
+    if (this.getPlayer().isInMultiplayer()) {
+      return;
     }
 
-    public void removeTrialAvatarTeam() {
-        this.removeTrialAvatarTeam(
-            this.getActiveTeam().stream().map(avatar -> avatar.getAvatar().getAvatarId()).toList());
+    TeamInfo teamInfo = this.getTeams().get(teamId);
+    if (teamInfo == null || teamInfo.getAvatars().size() == 0) {
+      return;
     }
 
-    public void removeTrialAvatarTeam(int avatarId) {
-        this.removeTrialAvatarTeam(List.of(avatarId));
+    this.setCurrentTeamId(teamId);
+    this.updateTeamEntities(new PacketChooseCurAvatarTeamRsp(teamId));
+  }
+
+  public synchronized void setTeamName(int teamId, String teamName) {
+
+    TeamInfo teamInfo = this.getTeams().get(teamId);
+    if (teamInfo == null) {
+      return;
     }
 
-    public void removeTrialAvatarTeam(List<Integer> trialAvatarIds) {
-        var isTeam = trialAvatarIds.size() == this.getActiveTeam().size();
+    teamInfo.setName(teamName);
 
-        var player = this.getPlayer();
-        var scene = player.getScene();
+    this.getPlayer().sendPacket(new PacketChangeTeamNameRsp(teamId, teamName));
+  }
 
-        this.usingTrialTeam = false;
-        this.trialAvatarTeam = new TeamInfo();
-
-        this.getActiveTeam()
-            .forEach(
-                avatarEntity ->
-                    scene.removeEntity(
-                        avatarEntity, VisionTypeOuterClass.VisionType.VisionType_VISION_REMOVE));
-
-        if (isTeam) {
-            this.getActiveTeam().clear();
-            this.getTrialAvatars().clear();
-        } else {
-            trialAvatarIds.forEach(
-                trialAvatarId -> {
-                    this.getActiveTeam().removeIf(x -> x.getAvatar().getTrialAvatarId() == trialAvatarId);
-                    this.getTrialAvatars().values().removeIf(x -> x.getTrialAvatarId() == trialAvatarId);
-                });
-        }
-
-        if (isTeam) {
-
-            this.getCurrentTeamInfo()
-                .getAvatars()
-                .forEach(
-                    avatarId ->
-                        this.getActiveTeam()
-                            .add(
-                                EntityCreationEvent.call(
-                                    EntityAvatar.class,
-                                    new Class<?>[] {Scene.class, Avatar.class},
-                                    new Object[] {scene, player.getAvatars().getAvatarById(avatarId)})));
-        } else {
-
-            var avatars = this.getCurrentTeamInfo().getAvatars();
-            for (var index = 0; index < avatars.size() - 1; index++) {
-                var avatar = avatars.get(index);
-                if (this.getActiveTeam().stream()
-                    .map(entity -> entity.getAvatar().getAvatarId())
-                    .toList()
-                    .contains(avatar)) continue;
-
-                var avatarData = player.getAvatars().getAvatarById(avatar);
-                if (avatarData == null) continue;
-
-                this.getActiveTeam()
-                    .add(
-                        index,
-                        EntityCreationEvent.call(
-                            EntityAvatar.class,
-                            new Class<?>[] {Scene.class, Avatar.class},
-                            new Object[] {scene, avatarData}));
-            }
-        }
-
-        this.unsetTrialAvatarTeam();
+  public synchronized void changeAvatar(long guid) {
+    EntityAvatar oldEntity = this.getCurrentAvatarEntity();
+    if (oldEntity == null || guid == oldEntity.getAvatar().getGuid()) {
+      return;
     }
 
-    public void setupTemporaryTeam(List<List<Long>> guidList) {
-        this.temporaryTeam =
-            guidList.stream()
-                .map(
-                    list -> {
-
-                        if (list.size() == 0 || list.size() > this.getMaxTeamSize()) {
-                            return null;
-                        }
-
-                        LinkedHashSet<Avatar> newTeam = new LinkedHashSet<>();
-                        for (Long aLong : list) {
-                            Avatar avatar = this.getPlayer().getAvatars().getAvatarByGuid(aLong);
-                            if (avatar == null || newTeam.contains(avatar)) {
-
-                                return null;
-                            }
-                            newTeam.add(avatar);
-                        }
-
-                        return newTeam.stream().map(Avatar::getAvatarId).toList();
-                    })
-                .filter(Objects::nonNull)
-                .map(TeamInfo::new)
-                .toList();
+    EntityAvatar newEntity = null;
+    int index = -1;
+    for (int i = 0; i < this.getActiveTeam().size(); i++) {
+      if (guid == this.getActiveTeam().get(i).getAvatar().getGuid()) {
+        index = i;
+        newEntity = this.getActiveTeam().get(i);
+      }
     }
 
-    public void useTemporaryTeam(int index) {
-        this.useTemporarilyTeamIndex = index;
-        this.updateTeamEntities(null);
+    if (index < 0 || newEntity == oldEntity) {
+      return;
     }
 
-    public boolean cleanTemporaryTeam() {
+    var event =
+        new PlayerSwitchAvatarEvent(this.getPlayer(), oldEntity.getAvatar(), newEntity.getAvatar());
+    if (!event.call()) return;
 
-        if (useTemporarilyTeamIndex < 0) {
-            return false;
-        }
+    newEntity = event.getNewAvatarEntity();
 
-        this.useTemporarilyTeamIndex = -1;
-        this.temporaryTeam = null;
-        this.updateTeamEntities(null);
-        return true;
-    }
+    this.setCurrentCharacterIndex(index);
 
-    public synchronized void setCurrentTeam(int teamId) {
+    oldEntity.setMotionState(MotionState.MotionState_MOTION_STANDBY);
 
-        if (this.getPlayer().isInMultiplayer()) {
-            return;
-        }
+    this.getPlayer().getScene().replaceEntity(oldEntity, newEntity);
+    this.getPlayer().sendPacket(new PacketChangeAvatarRsp(guid));
+  }
 
-        TeamInfo teamInfo = this.getTeams().get(teamId);
-        if (teamInfo == null || teamInfo.getAvatars().size() == 0) {
-            return;
-        }
-
-        this.setCurrentTeamId(teamId);
-        this.updateTeamEntities(new PacketChooseCurAvatarTeamRsp(teamId));
-    }
-
-    public synchronized void setTeamName(int teamId, String teamName) {
-
-        TeamInfo teamInfo = this.getTeams().get(teamId);
-        if (teamInfo == null) {
-            return;
-        }
-
-        teamInfo.setName(teamName);
-
-        this.getPlayer().sendPacket(new PacketChangeTeamNameRsp(teamId, teamName));
-    }
-
-    public synchronized void changeAvatar(long guid) {
-        EntityAvatar oldEntity = this.getCurrentAvatarEntity();
-        if (oldEntity == null || guid == oldEntity.getAvatar().getGuid()) {
-            return;
-        }
-
-        EntityAvatar newEntity = null;
-        int index = -1;
-        for (int i = 0; i < this.getActiveTeam().size(); i++) {
-            if (guid == this.getActiveTeam().get(i).getAvatar().getGuid()) {
-                index = i;
-                newEntity = this.getActiveTeam().get(i);
-            }
-        }
-
-        if (index < 0 || newEntity == oldEntity) {
-            return;
-        }
-
-        var event =
-            new PlayerSwitchAvatarEvent(this.getPlayer(), oldEntity.getAvatar(), newEntity.getAvatar());
-        if (!event.call()) return;
-
-        newEntity = event.getNewAvatarEntity();
-
-        this.setCurrentCharacterIndex(index);
-
-        oldEntity.setMotionState(MotionState.MotionState_MOTION_STANDBY);
-
-        this.getPlayer().getScene().replaceEntity(oldEntity, newEntity);
-        this.getPlayer().sendPacket(new PacketChangeAvatarRsp(guid));
-    }
-
-    public void applyVoidDamage() {
-        this.getActiveTeam()
-            .forEach(
-                entity -> {
-                    entity.damage(entity.getFightProperty(FightProperty.FIGHT_PROP_MAX_HP) * .1f);
-                    player.sendPacket(new PacketAvatarLifeStateChangeNotify(entity.getAvatar()));
-                });
-    }
-
-    public void onAvatarDie(long dieGuid) {
-        EntityAvatar deadAvatar = this.getCurrentAvatarEntity();
-        if (deadAvatar == null || deadAvatar.getId() != dieGuid) return;
-
-        PlayerDieType dieType = deadAvatar.getKilledType();
-        int killedBy = deadAvatar.getKilledBy();
-
-        if (dieType == PlayerDieType.PlayerDieType_PLAYER_DIE_DRAWN) {
-
-            this.getPlayer().sendPacket(new PacketWorldPlayerDieNotify(dieType, killedBy));
-        } else {
-
-            int replaceIndex = getDeadAvatarReplacement();
-            if (0 <= replaceIndex && replaceIndex < this.getActiveTeam().size()) {
-
-                this.setCurrentCharacterIndex(replaceIndex);
-                this.getPlayer().getScene().addEntity(this.getActiveTeam().get(replaceIndex));
-            } else {
-
-                this.getPlayer().sendPacket(new PacketWorldPlayerDieNotify(dieType, killedBy));
-
-                PlayerTeamDeathEvent event =
-                    new PlayerTeamDeathEvent(
-                        this.getPlayer(), this.getActiveTeam().get(this.getCurrentCharacterIndex()));
-                event.call();
-            }
-        }
-
-        this.getPlayer().sendPacket(new PacketAvatarDieAnimationEndRsp(deadAvatar.getId(), 0));
-    }
-
-    public int getDeadAvatarReplacement() {
-        int replaceIndex = -1;
-
-        for (int i = 0; i < this.getActiveTeam().size(); i++) {
-            EntityAvatar entity = this.getActiveTeam().get(i);
-            if (entity.isAlive()) {
-                replaceIndex = i;
-                break;
-            }
-        }
-
-        return replaceIndex;
-    }
-
-    public boolean reviveAvatar(Avatar avatar) {
-        for (EntityAvatar entity : this.getActiveTeam()) {
-            if (entity.getAvatar() == avatar) {
-                if (entity.isAlive()) {
-                    return false;
-                }
-
-                entity.setFightProperty(FightProperty.FIGHT_PROP_CUR_HP, 1f);
-
-                player.getSatiationManager().removeSatiationDirectly(entity.getAvatar(), 15000);
-                this.getPlayer()
-                    .sendPacket(
-                        new PacketAvatarFightPropUpdateNotify(
-                            entity.getAvatar(), FightProperty.FIGHT_PROP_CUR_HP));
-                this.getPlayer().sendPacket(new PacketAvatarLifeStateChangeNotify(entity.getAvatar()));
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    public boolean healAvatar(Avatar avatar, int healRate, int healAmount) {
-        for (EntityAvatar entity : this.getActiveTeam()) {
-            if (entity.getAvatar() == avatar) {
-                if (!entity.isAlive()) {
-                    return false;
-                }
-
-                entity.setFightProperty(
-                    FightProperty.FIGHT_PROP_CUR_HP,
-                    (float)
-                        Math.min(
-                            (entity.getFightProperty(FightProperty.FIGHT_PROP_CUR_HP)
-                                + entity.getFightProperty(FightProperty.FIGHT_PROP_MAX_HP)
-                                * (float) healRate
-                                / 100.0
-                                + (float) healAmount / 100.0),
-                            entity.getFightProperty(FightProperty.FIGHT_PROP_MAX_HP)));
-                this.getPlayer()
-                    .sendPacket(
-                        new PacketAvatarFightPropUpdateNotify(
-                            entity.getAvatar(), FightProperty.FIGHT_PROP_CUR_HP));
-                this.getPlayer().sendPacket(new PacketAvatarLifeStateChangeNotify(entity.getAvatar()));
-                return true;
-            }
-        }
-        return false;
-    }
-
-    public void respawnTeam() {
-
-        this.getPlayer()
-            .getStaminaManager()
-            .stopSustainedStaminaHandler();
-
-        for (EntityAvatar entity : this.getActiveTeam()) {
-            entity.setFightProperty(
-                FightProperty.FIGHT_PROP_CUR_HP,
-                entity.getFightProperty(FightProperty.FIGHT_PROP_MAX_HP) * .4f);
-            this.getPlayer().getSatiationManager().removeSatiationDirectly(entity.getAvatar(), 15000);
-            this.getPlayer()
-                .sendPacket(
-                    new PacketAvatarFightPropUpdateNotify(
-                        entity.getAvatar(), FightProperty.FIGHT_PROP_CUR_HP));
-            this.getPlayer().sendPacket(new PacketAvatarLifeStateChangeNotify(entity.getAvatar()));
-        }
-
-        try {
-            this.getPlayer()
-                .sendPacket(
-                    new PacketPlayerEnterSceneNotify(
-                        this.getPlayer(),
-                        EnterType.EnterType_ENTER_SELF,
-                        EnterReason.Revival,
-                        this.getPlayer().getSceneId(),
-                        this.getRespawnPosition()));
-            this.getPlayer().sendPacket(new PacketEnterScenePeerNotify(this.getPlayer()));
-            this.getPlayer().getPosition().set(this.getRespawnPosition());
-        } catch (Exception ignored) {
-            this.getPlayer()
-                .sendPacket(
-                    new PacketPlayerEnterSceneNotify(
-                        this.getPlayer(),
-                        EnterType.EnterType_ENTER_SELF,
-                        EnterReason.Revival,
-                        3,
-                        GameConstants.START_POSITION));
-            this.getPlayer().sendPacket(new PacketEnterScenePeerNotify(this.getPlayer()));
-            this.getPlayer()
-                .getPosition()
-                .set(GameConstants.START_POSITION);
-        }
-
-        this.getPlayer().sendPacket(new BasePacket(PacketOpcodes.WorldPlayerReviveRsp));
-    }
-
-    public Position getRespawnPosition() {
-        var deathPos = this.getPlayer().getPosition();
-        int sceneId = this.getPlayer().getSceneId();
-
-        var respawnPoint =
-            this.getPlayer().getUnlockedScenePoints(sceneId).stream()
-                .map(pointId -> GameData.getScenePointEntryById(sceneId, pointId))
-                .filter(point -> point.getPointData().getType().equals("SceneTransPoint"))
-                .min(
-                    (Comparator.comparingDouble(
-                        pos -> Utils.getDist(pos.getPointData().getTranPos(), deathPos))));
-
-        return respawnPoint.get().getPointData().getTranPos();
-    }
-
-    public void saveAvatars() {
-
-        for (EntityAvatar entity : this.getActiveTeam()) {
-            entity.getAvatar().save();
-        }
-    }
-
-    public void onPlayerLogin() {
-        this.updateTeamResonances();
-    }
-
-    public synchronized void addNewCustomTeam() {
-
-        if (this.teams.size() == GameConstants.MAX_TEAMS) {
-            player.sendPacket(new PacketAddBackupAvatarTeamRsp(Retcode.RET_FAIL));
-            return;
-        }
-
-        int id = -1;
-        for (int i = 5; i <= GameConstants.MAX_TEAMS; i++) {
-            if (!this.teams.containsKey(i)) {
-                id = i;
-                break;
-            }
-        }
-
-        this.teams.put(id, new TeamInfo());
-
-        player.sendPacket(new PacketAvatarTeamAllDataNotify(player));
-        player.sendPacket(new PacketAddBackupAvatarTeamRsp());
-    }
-
-    public synchronized void removeCustomTeam(int id) {
-
-        if (!this.teams.containsKey(id)) {
-            player.sendPacket(new PacketDelBackupAvatarTeamRsp(Retcode.RET_FAIL, id));
-        }
-
-        this.teams.remove(id);
-
-        player.sendPacket(new PacketAvatarTeamAllDataNotify(player));
-        player.sendPacket(new PacketDelBackupAvatarTeamRsp(id));
-    }
-
-    public void applyAbilities(Scene scene) {
-        try {
-            var levelEntityConfig = scene.getSceneData().getLevelEntityConfig();
-            var config = GameData.getConfigLevelEntityDataMap().get(levelEntityConfig);
-            if (config == null) return;
-
-            var avatars = this.getPlayer().getAvatars();
-            var avatarIds = scene.getSceneData().getSpecifiedAvatarList();
-            var specifiedAvatarList = this.getActiveTeam();
-
-            if (avatarIds != null && avatarIds.size() > 0) {
-
-                specifiedAvatarList.clear();
-                for (int id : avatarIds) {
-                    var avatar = avatars.getAvatarById(id);
-                    if (avatar == null) continue;
-
-                    specifiedAvatarList.add(
-                        EntityCreationEvent.call(
-                            EntityAvatar.class,
-                            new Class<?>[] {Scene.class, Avatar.class},
-                            new Object[] {scene, avatar}));
-                }
-            }
-
-            for (var entityAvatar : specifiedAvatarList) {
-                var avatarData = entityAvatar.getAvatar().getAvatarData();
-                if (avatarData == null) {
-                    continue;
-                }
-
-                avatarData.buildEmbryo();
-                if (config.getAvatarAbilities() == null) {
-                    continue;
-
-                }
-
-                for (var abilities : config.getAvatarAbilities()) {
-                    avatarData.getAbilities().add(Utils.abilityHash(abilities.getAbilityName()));
-                }
-            }
-        } catch (Exception e) {
-            Grasscutter.getLogger()
-                .error(
-                    "Error applying level entity config for scene {}", scene.getSceneData().getId(), e);
-        }
-    }
-
-    public List<Integer> getTrialAvatarParam(int trialAvatarId) {
-        if (GameData.getTrialAvatarCustomData()
-            .isEmpty()) {
-            if (GameData.getTrialAvatarDataMap().get(trialAvatarId) == null) return List.of();
-
-            return GameData.getTrialAvatarDataMap().get(trialAvatarId).getTrialAvatarParamList();
-        }
-
-        if (GameData.getTrialAvatarCustomData().get(trialAvatarId) == null) return List.of();
-
-        val trialCustomParams =
-            GameData.getTrialAvatarCustomData().get(trialAvatarId).getTrialAvatarParamList();
-        return trialCustomParams.isEmpty()
-            ? List.of()
-            : Stream.of(trialCustomParams.get(0).split(";")).map(Integer::parseInt).toList();
-    }
-
-    public boolean addTrialAvatar(int avatarId, int questMainId, GrantReason reason) {
-        List<Integer> trialAvatarBasicParam = getTrialAvatarParam(avatarId);
-        if (trialAvatarBasicParam.isEmpty()) return false;
-
-        var avatar = new Avatar(trialAvatarBasicParam.get(0));
-        if (avatar.getAvatarData() == null || !this.getPlayer().hasSentLoginPackets()) return false;
-
-        avatar.setOwner(this.getPlayer());
-
-        avatar.setTrialAvatarInfo(trialAvatarBasicParam.get(1), avatarId, reason, questMainId);
-        avatar.equipTrialItems();
-
-        avatar.recalcStats();
-
-        this.getPlayer().sendPacket(new PacketAvatarAddNotify(avatar, false));
-
-        this.addAvatarToTrialTeam(avatar);
-        return true;
-    }
-
-    public void addTrialAvatar(int avatarId, int questMainId) {
-        this.addTrialAvatars(List.of(avatarId), questMainId, true);
-
-        this.getPlayer().sendPacket(new PacketAvatarTeamUpdateNotify(this.getPlayer()));
-    }
-
-    public void addTrialAvatars(List<Integer> avatarIds) {
-        this.addTrialAvatars(avatarIds, 0, false);
-    }
-
-    public void addTrialAvatars(List<Integer> avatarIds, boolean save) {
-        this.addTrialAvatars(avatarIds, 0, save);
-    }
-
-    public void addTrialAvatars(List<Integer> trialAvatarIds, int questId, boolean save) {
-        this.setupTrialAvatars(save);
-
-        trialAvatarIds.forEach(
-            trialAvatarId -> {
-                var result =
-                    this.addTrialAvatar(
-                        trialAvatarId,
-                        questId,
-                        questId != 0
-                            ? GrantReason.GRANT_REASON_BY_QUEST
-                            : GrantReason.GRANT_REASON_BY_TRIAL_AVATAR_ACTIVITY);
-
-                if (!result) throw new RuntimeException("Unable to add trial avatar to team.");
+  public void applyVoidDamage() {
+    this.getActiveTeam()
+        .forEach(
+            entity -> {
+              entity.damage(entity.getFightProperty(FightProperty.FIGHT_PROP_MAX_HP) * .1f);
+              player.sendPacket(new PacketAvatarLifeStateChangeNotify(entity.getAvatar()));
             });
+  }
 
-        this.trialAvatarTeamPostUpdate(questId != 0 ? this.getActiveTeam().size() - 1 : 0);
+  public void onAvatarDie(long dieGuid) {
+    EntityAvatar deadAvatar = this.getCurrentAvatarEntity();
+    if (deadAvatar == null || deadAvatar.getId() != dieGuid) return;
+
+    PlayerDieType dieType = deadAvatar.getKilledType();
+    int killedBy = deadAvatar.getKilledBy();
+
+    if (dieType == PlayerDieType.PlayerDieType_PLAYER_DIE_DRAWN) {
+
+      this.getPlayer().sendPacket(new PacketWorldPlayerDieNotify(dieType, killedBy));
+    } else {
+
+      int replaceIndex = getDeadAvatarReplacement();
+      if (0 <= replaceIndex && replaceIndex < this.getActiveTeam().size()) {
+
+        this.setCurrentCharacterIndex(replaceIndex);
+        this.getPlayer().getScene().addEntity(this.getActiveTeam().get(replaceIndex));
+      } else {
+
+        this.getPlayer().sendPacket(new PacketWorldPlayerDieNotify(dieType, killedBy));
+
+        PlayerTeamDeathEvent event =
+            new PlayerTeamDeathEvent(
+                this.getPlayer(), this.getActiveTeam().get(this.getCurrentCharacterIndex()));
+        event.call();
+      }
     }
 
-    public void removeTrialAvatar() {
-        this.removeTrialAvatar(
-            this.getActiveTeam().stream()
-                .map(EntityAvatar::getAvatar)
-                .map(Avatar::getTrialAvatarId)
-                .toList());
+    this.getPlayer().sendPacket(new PacketAvatarDieAnimationEndRsp(deadAvatar.getId(), 0));
+  }
+
+  public int getDeadAvatarReplacement() {
+    int replaceIndex = -1;
+
+    for (int i = 0; i < this.getActiveTeam().size(); i++) {
+      EntityAvatar entity = this.getActiveTeam().get(i);
+      if (entity.isAlive()) {
+        replaceIndex = i;
+        break;
+      }
     }
 
-    public void removeTrialAvatar(int trialAvatarId) {
-        this.removeTrialAvatar(List.of(trialAvatarId));
-    }
+    return replaceIndex;
+  }
 
-    public void removeTrialAvatar(List<Integer> trialAvatarIds) {
+  public boolean reviveAvatar(Avatar avatar) {
+    for (EntityAvatar entity : this.getActiveTeam()) {
+      if (entity.getAvatar() == avatar) {
+        if (entity.isAlive()) {
+          return false;
+        }
 
-        if (!this.isUsingTrialTeam()) return;
+        entity.setFightProperty(FightProperty.FIGHT_PROP_CUR_HP, 1f);
 
+        player.getSatiationManager().removeSatiationDirectly(entity.getAvatar(), 15000);
         this.getPlayer()
             .sendPacket(
-                new PacketAvatarDelNotify(
-                    trialAvatarIds.stream().map(this::getTrialAvatarGuid).toList()));
-        this.removeTrialAvatarTeam(trialAvatarIds);
-
-        if (trialAvatarIds.size() == 1) this.getPlayer().sendPacket(new PacketAvatarTeamUpdateNotify());
+                new PacketAvatarFightPropUpdateNotify(
+                    entity.getAvatar(), FightProperty.FIGHT_PROP_CUR_HP));
+        this.getPlayer().sendPacket(new PacketAvatarLifeStateChangeNotify(entity.getAvatar()));
+        return true;
+      }
     }
+
+    return false;
+  }
+
+  public boolean healAvatar(Avatar avatar, int healRate, int healAmount) {
+    for (EntityAvatar entity : this.getActiveTeam()) {
+      if (entity.getAvatar() == avatar) {
+        if (!entity.isAlive()) {
+          return false;
+        }
+
+        entity.setFightProperty(
+            FightProperty.FIGHT_PROP_CUR_HP,
+            (float)
+                Math.min(
+                    (entity.getFightProperty(FightProperty.FIGHT_PROP_CUR_HP)
+                        + entity.getFightProperty(FightProperty.FIGHT_PROP_MAX_HP)
+                            * (float) healRate
+                            / 100.0
+                        + (float) healAmount / 100.0),
+                    entity.getFightProperty(FightProperty.FIGHT_PROP_MAX_HP)));
+        this.getPlayer()
+            .sendPacket(
+                new PacketAvatarFightPropUpdateNotify(
+                    entity.getAvatar(), FightProperty.FIGHT_PROP_CUR_HP));
+        this.getPlayer().sendPacket(new PacketAvatarLifeStateChangeNotify(entity.getAvatar()));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public void respawnTeam() {
+
+    this.getPlayer().getStaminaManager().stopSustainedStaminaHandler();
+
+    for (EntityAvatar entity : this.getActiveTeam()) {
+      entity.setFightProperty(
+          FightProperty.FIGHT_PROP_CUR_HP,
+          entity.getFightProperty(FightProperty.FIGHT_PROP_MAX_HP) * .4f);
+      this.getPlayer().getSatiationManager().removeSatiationDirectly(entity.getAvatar(), 15000);
+      this.getPlayer()
+          .sendPacket(
+              new PacketAvatarFightPropUpdateNotify(
+                  entity.getAvatar(), FightProperty.FIGHT_PROP_CUR_HP));
+      this.getPlayer().sendPacket(new PacketAvatarLifeStateChangeNotify(entity.getAvatar()));
+    }
+
+    try {
+      this.getPlayer()
+          .sendPacket(
+              new PacketPlayerEnterSceneNotify(
+                  this.getPlayer(),
+                  EnterType.EnterType_ENTER_SELF,
+                  EnterReason.Revival,
+                  this.getPlayer().getSceneId(),
+                  this.getRespawnPosition()));
+      this.getPlayer().sendPacket(new PacketEnterScenePeerNotify(this.getPlayer()));
+      this.getPlayer().getPosition().set(this.getRespawnPosition());
+    } catch (Exception ignored) {
+      this.getPlayer()
+          .sendPacket(
+              new PacketPlayerEnterSceneNotify(
+                  this.getPlayer(),
+                  EnterType.EnterType_ENTER_SELF,
+                  EnterReason.Revival,
+                  3,
+                  GameConstants.START_POSITION));
+      this.getPlayer().sendPacket(new PacketEnterScenePeerNotify(this.getPlayer()));
+      this.getPlayer().getPosition().set(GameConstants.START_POSITION);
+    }
+
+    this.getPlayer().sendPacket(new BasePacket(PacketOpcodes.WorldPlayerReviveRsp));
+  }
+
+  public Position getRespawnPosition() {
+    var deathPos = this.getPlayer().getPosition();
+    int sceneId = this.getPlayer().getSceneId();
+
+    var respawnPoint =
+        this.getPlayer().getUnlockedScenePoints(sceneId).stream()
+            .map(pointId -> GameData.getScenePointEntryById(sceneId, pointId))
+            .filter(point -> point.getPointData().getType().equals("SceneTransPoint"))
+            .min(
+                (Comparator.comparingDouble(
+                    pos -> Utils.getDist(pos.getPointData().getTranPos(), deathPos))));
+
+    return respawnPoint.get().getPointData().getTranPos();
+  }
+
+  public void saveAvatars() {
+
+    for (EntityAvatar entity : this.getActiveTeam()) {
+      entity.getAvatar().save();
+    }
+  }
+
+  public void onPlayerLogin() {
+    this.updateTeamResonances();
+  }
+
+  public synchronized void addNewCustomTeam() {
+
+    if (this.teams.size() == GameConstants.MAX_TEAMS) {
+      player.sendPacket(new PacketAddBackupAvatarTeamRsp(Retcode.RET_FAIL));
+      return;
+    }
+
+    int id = -1;
+    for (int i = 5; i <= GameConstants.MAX_TEAMS; i++) {
+      if (!this.teams.containsKey(i)) {
+        id = i;
+        break;
+      }
+    }
+
+    this.teams.put(id, new TeamInfo());
+
+    player.sendPacket(new PacketAvatarTeamAllDataNotify(player));
+    player.sendPacket(new PacketAddBackupAvatarTeamRsp());
+  }
+
+  public synchronized void removeCustomTeam(int id) {
+
+    if (!this.teams.containsKey(id)) {
+      player.sendPacket(new PacketDelBackupAvatarTeamRsp(Retcode.RET_FAIL, id));
+    }
+
+    this.teams.remove(id);
+
+    player.sendPacket(new PacketAvatarTeamAllDataNotify(player));
+    player.sendPacket(new PacketDelBackupAvatarTeamRsp(id));
+  }
+
+  public void applyAbilities(Scene scene) {
+    try {
+      var levelEntityConfig = scene.getSceneData().getLevelEntityConfig();
+      var config = GameData.getConfigLevelEntityDataMap().get(levelEntityConfig);
+      if (config == null) return;
+
+      var avatars = this.getPlayer().getAvatars();
+      var avatarIds = scene.getSceneData().getSpecifiedAvatarList();
+      var specifiedAvatarList = this.getActiveTeam();
+
+      if (avatarIds != null && avatarIds.size() > 0) {
+
+        specifiedAvatarList.clear();
+        for (int id : avatarIds) {
+          var avatar = avatars.getAvatarById(id);
+          if (avatar == null) continue;
+
+          specifiedAvatarList.add(
+              EntityCreationEvent.call(
+                  EntityAvatar.class,
+                  new Class<?>[] {Scene.class, Avatar.class},
+                  new Object[] {scene, avatar}));
+        }
+      }
+
+      for (var entityAvatar : specifiedAvatarList) {
+        var avatarData = entityAvatar.getAvatar().getAvatarData();
+        if (avatarData == null) {
+          continue;
+        }
+
+        avatarData.buildEmbryo();
+        if (config.getAvatarAbilities() == null) {
+          continue;
+        }
+
+        for (var abilities : config.getAvatarAbilities()) {
+          avatarData.getAbilities().add(Utils.abilityHash(abilities.getAbilityName()));
+        }
+      }
+    } catch (Exception e) {
+      Grasscutter.getLogger()
+          .error(
+              "Error applying level entity config for scene {}", scene.getSceneData().getId(), e);
+    }
+  }
+
+  public List<Integer> getTrialAvatarParam(int trialAvatarId) {
+    if (GameData.getTrialAvatarCustomData().isEmpty()) {
+      if (GameData.getTrialAvatarDataMap().get(trialAvatarId) == null) return List.of();
+
+      return GameData.getTrialAvatarDataMap().get(trialAvatarId).getTrialAvatarParamList();
+    }
+
+    if (GameData.getTrialAvatarCustomData().get(trialAvatarId) == null) return List.of();
+
+    val trialCustomParams =
+        GameData.getTrialAvatarCustomData().get(trialAvatarId).getTrialAvatarParamList();
+    return trialCustomParams.isEmpty()
+        ? List.of()
+        : Stream.of(trialCustomParams.get(0).split(";")).map(Integer::parseInt).toList();
+  }
+
+  public boolean addTrialAvatar(int avatarId, int questMainId, GrantReason reason) {
+    List<Integer> trialAvatarBasicParam = getTrialAvatarParam(avatarId);
+    if (trialAvatarBasicParam.isEmpty()) return false;
+
+    var avatar = new Avatar(trialAvatarBasicParam.get(0));
+    if (avatar.getAvatarData() == null || !this.getPlayer().hasSentLoginPackets()) return false;
+
+    avatar.setOwner(this.getPlayer());
+
+    avatar.setTrialAvatarInfo(trialAvatarBasicParam.get(1), avatarId, reason, questMainId);
+    avatar.equipTrialItems();
+
+    avatar.recalcStats();
+
+    this.getPlayer().sendPacket(new PacketAvatarAddNotify(avatar, false));
+
+    this.addAvatarToTrialTeam(avatar);
+    return true;
+  }
+
+  public void addTrialAvatar(int avatarId, int questMainId) {
+    this.addTrialAvatars(List.of(avatarId), questMainId, true);
+
+    this.getPlayer().sendPacket(new PacketAvatarTeamUpdateNotify(this.getPlayer()));
+  }
+
+  public void addTrialAvatars(List<Integer> avatarIds) {
+    this.addTrialAvatars(avatarIds, 0, false);
+  }
+
+  public void addTrialAvatars(List<Integer> avatarIds, boolean save) {
+    this.addTrialAvatars(avatarIds, 0, save);
+  }
+
+  public void addTrialAvatars(List<Integer> trialAvatarIds, int questId, boolean save) {
+    this.setupTrialAvatars(save);
+
+    trialAvatarIds.forEach(
+        trialAvatarId -> {
+          var result =
+              this.addTrialAvatar(
+                  trialAvatarId,
+                  questId,
+                  questId != 0
+                      ? GrantReason.GRANT_REASON_BY_QUEST
+                      : GrantReason.GRANT_REASON_BY_TRIAL_AVATAR_ACTIVITY);
+
+          if (!result) throw new RuntimeException("Unable to add trial avatar to team.");
+        });
+
+    this.trialAvatarTeamPostUpdate(questId != 0 ? this.getActiveTeam().size() - 1 : 0);
+  }
+
+  public void removeTrialAvatar() {
+    this.removeTrialAvatar(
+        this.getActiveTeam().stream()
+            .map(EntityAvatar::getAvatar)
+            .map(Avatar::getTrialAvatarId)
+            .toList());
+  }
+
+  public void removeTrialAvatar(int trialAvatarId) {
+    this.removeTrialAvatar(List.of(trialAvatarId));
+  }
+
+  public void removeTrialAvatar(List<Integer> trialAvatarIds) {
+
+    if (!this.isUsingTrialTeam()) return;
+
+    this.getPlayer()
+        .sendPacket(
+            new PacketAvatarDelNotify(
+                trialAvatarIds.stream().map(this::getTrialAvatarGuid).toList()));
+    this.removeTrialAvatarTeam(trialAvatarIds);
+
+    if (trialAvatarIds.size() == 1) this.getPlayer().sendPacket(new PacketAvatarTeamUpdateNotify());
+  }
 }

@@ -22,7 +22,8 @@ public final class ActionAttachModifier extends AbilityActionHandler {
             return false;
         }
 
-        if ("AllPlayerAvatars".equals(action.target)) {
+        if ("AllPlayerAvatars".equals(action.target)
+                || "CurTeamAvatars".equals(action.target)) {
             return applyToAllPlayerAvatars(ability, action, modifierData, abilityData);
         }
 
